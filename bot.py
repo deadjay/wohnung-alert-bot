@@ -1,8 +1,11 @@
 import requests
+import telegram
 from bs4 import BeautifulSoup
 import re
 import os
 import json
+import asyncio
+
 
 def fetch_offers():
     url = "https://inberlinwohnen.de/wp-content/themes/ibw/skript/wohnungsfinder.php"
@@ -47,6 +50,22 @@ def fetch_offers():
 
         adresse = text.split("|")[-1].strip() if "|" in text else ""
 
+        # Filter: Only listings with rent <= 1000 and in selected districts
+        try:
+            rent = float(kaltmiete.replace(",", "."))
+        except ValueError:
+            continue  # Skip if price is invalid
+
+        allowed_districts = [
+            "Kreuzberg", "Friedrichshain", "Pankow", "Neukölln", "Mitte", "Tempelhof", "Schöneberg"
+        ]
+
+        if rent > 1000:
+            continue
+
+        if not any(district.lower() in adresse.lower() for district in allowed_districts):
+            continue
+
         offers.append({
             "objektID": objekt_id,
             "adresse": adresse,
@@ -79,6 +98,13 @@ def save_seen_ids(ids):
     with open("seen.json", "w") as f:
         json.dump(list(ids), f)
 
+async def send_telegram_message(text):
+    try:
+        bot = telegram.Bot(token=TELEGRAM_BOT_TOKEN)
+        await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=text, parse_mode="HTML")
+    except Exception as e:
+        print(f"Failed to send Telegram message: {e}")
+
 def main():
     seen_ids = load_seen_ids()
     offers = fetch_offers()
@@ -97,9 +123,15 @@ def main():
     save_seen_ids(seen_ids)
 
     for offer in new_offers:
-        print(f"🏠 {offer.get('adresse')} | {offer.get('zimmer')} Zimmer | {offer.get('qm')} m² | {offer.get('kaltmiete')} €")
-        print(f"https://inberlinwohnen.de/wohnungsfinder/?oID={offer.get('objektID')}")
-        print("---")
+        message = (
+            f"🏠 <b>{offer.get('adresse')}</b>\n"
+            f"{offer.get('zimmer')} Zimmer | {offer.get('qm')} m² | {offer.get('kaltmiete')} €\n"
+            f"<a href='https://inberlinwohnen.de/wohnungsfinder/?oID={offer.get('objektID')}'>🔗 Zum Angebot</a>"
+        )
+
+        print(message)  # Для отладки
+        asyncio.run(send_telegram_message(message))
 
 if __name__ == "__main__":
     main()
+
