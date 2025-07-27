@@ -1,11 +1,14 @@
 import requests
 import telegram
+from telegram.ext import ApplicationBuilder, CommandHandler
 from bs4 import BeautifulSoup
 import re
 import os
 import json
 import asyncio
+import threading
 
+SUBSCRIBERS_FILE = "subscribers.json"
 
 def fetch_offers():
     url = "https://inberlinwohnen.de/wp-content/themes/ibw/skript/wohnungsfinder.php"
@@ -20,8 +23,7 @@ def fetch_offers():
     soup = BeautifulSoup(html, "html.parser")
 
     print(f"HTML length: {len(html)}")
-    print(html[:1000])  # first 1000 characters
-
+    # print(html[:1000])  # first 1000 characters
 
     offers = []
     flats = soup.find_all("li", class_="tb-merkflat")
@@ -64,7 +66,7 @@ def fetch_offers():
             continue
 
         if not any(district.lower() in adresse.lower() for district in allowed_districts):
-            continue
+           continue
 
         offers.append({
             "objektID": objekt_id,
@@ -98,14 +100,49 @@ def save_seen_ids(ids):
     with open("seen.json", "w") as f:
         json.dump(list(ids), f)
 
-async def send_telegram_message(text):
+async def send_telegram_message(text, chat_id):
     try:
         bot = telegram.Bot(token=TELEGRAM_BOT_TOKEN)
-        await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=text, parse_mode="HTML")
+        await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
     except Exception as e:
-        print(f"Failed to send Telegram message: {e}")
+        print(f"Failed to send message to {chat_id}: {e}")
+
+def load_subscribers():
+    if os.path.exists(SUBSCRIBERS_FILE):
+        with open(SUBSCRIBERS_FILE, "r") as f:
+            return set(json.load(f))
+    return set()
+
+def save_subscribers(subscribers):
+    with open(SUBSCRIBERS_FILE, "w") as f:
+        json.dump(list(subscribers), f)
+
+async def start_command(update, context):
+    chat_id = update.effective_chat.id
+    subscribers = load_subscribers()
+    if chat_id not in subscribers:
+        subscribers.add(chat_id)
+        save_subscribers(subscribers)
+        await update.message.reply_text("✅ You are now subscribed to apartment alerts!")
+    else:
+        await update.message.reply_text("👀 You're already subscribed.")
+
+def run_bot_listener():
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
+    app.add_handler(CommandHandler("start", start_command))
+    loop.run_until_complete(app.initialize())
+    loop.run_until_complete(app.start())
+    loop.run_until_complete(app.updater.start_polling())
+    loop.run_forever()
+
 
 def main():
+    # запустить слушателя в фоне
+    threading.Thread(target=run_bot_listener, daemon=True).start()
+
     seen_ids = load_seen_ids()
     offers = fetch_offers()
     new_offers = []
@@ -130,7 +167,9 @@ def main():
         )
 
         print(message)  # Для отладки
-        asyncio.run(send_telegram_message(message))
+        subscribers = load_subscribers()
+        for chat_id in subscribers:
+            asyncio.run(send_telegram_message(message, chat_id))
 
 if __name__ == "__main__":
     main()
