@@ -1,13 +1,16 @@
 import requests
 import telegram
-from telegram.ext import ApplicationBuilder, CommandHandler
-from bs4 import BeautifulSoup
 import re
 import os
 import json
 import asyncio
 import threading
+from telegram.ext import ApplicationBuilder, CommandHandler
+from bs4 import BeautifulSoup
+from dotenv import load_dotenv
+load_dotenv()
 
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 SUBSCRIBERS_FILE = "subscribers.json"
 
 def fetch_offers():
@@ -15,7 +18,6 @@ def fetch_offers():
     payload = {
         "q": "wf-save-srch",
         "save": "false"
-        # Добавляй фильтры сюда, если нужно
     }
     resp = requests.post(url, data=payload)
     data = resp.json()
@@ -166,7 +168,7 @@ def main():
             f"<a href='https://inberlinwohnen.de/wohnungsfinder/?oID={offer.get('objektID')}'>🔗 Zum Angebot</a>"
         )
 
-        print(message)  # Для отладки
+        print(message)
         subscribers = load_subscribers()
         for chat_id in subscribers:
             asyncio.run(send_telegram_message(message, chat_id))
