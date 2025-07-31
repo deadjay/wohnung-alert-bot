@@ -1,4 +1,4 @@
-print("Script started")
+import time
 import requests
 import telegram
 import re
@@ -189,6 +189,14 @@ def main():
         for chat_id in subscribers:
             asyncio.run(send_telegram_message(message, chat_id))
 
-if __name__ == "__main__":
-    main()
+def run_bot():
+    while True:
+        try:
+            main()
+        except Exception as e:
+            print(f"Error in main loop: {e}")
+        print("Sleeping for 10 minutes...")
+        time.sleep(600)
 
+if __name__ == "__main__":
+    run_bot()

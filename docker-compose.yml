@@ -1,0 +1,9 @@
+services:
+  bot:
+    build: .
+    container_name: wohnung-alert-bot
+    restart: always
+    env_file:
+      - .env
+    volumes:
+      - .:/app
