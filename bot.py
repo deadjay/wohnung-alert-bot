@@ -1,3 +1,4 @@
+print("Script started")
 import requests
 import telegram
 import re
@@ -116,14 +117,18 @@ def save_seen_ids(ids):
 async def send_telegram_message(text, chat_id):
     try:
         bot = telegram.Bot(token=TELEGRAM_BOT_TOKEN)
+        print(f"Sending message to chat_id={chat_id}: {text}")
         await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
     except Exception as e:
         print(f"Failed to send message to {chat_id}: {e}")
 
 def load_subscribers():
-    if os.path.exists(SUBSCRIBERS_FILE):
-        with open(SUBSCRIBERS_FILE, "r") as f:
-            return set(json.load(f))
+    try:
+        if os.path.exists(SUBSCRIBERS_FILE):
+            with open(SUBSCRIBERS_FILE, "r") as f:
+                return set(json.load(f))
+    except Exception as e:
+        print(f"Error loading subscribers: {e}")
     return set()
 
 def save_subscribers(subscribers):
