@@ -19,7 +19,18 @@ def fetch_offers():
         "q": "wf-save-srch",
         "save": "false"
     }
-    resp = requests.post(url, data=payload)
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",
+        "Accept": "*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://inberlinwohnen.de/wohnungsfinder/",
+        "Origin": "https://inberlinwohnen.de",
+    }
+
+    resp = requests.post(url, data=payload, headers=headers, timeout=10)
+    resp.raise_for_status()
+
     data = resp.json()
     html = data.get("searchresults", "")
     soup = BeautifulSoup(html, "html.parser")
