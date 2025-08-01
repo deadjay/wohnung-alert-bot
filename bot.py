@@ -1,14 +1,11 @@
-import asyncio
 import json
 import os
 import re
-import telegram
 
 import requests
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, JobQueue
-
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 load_dotenv()
 TELEGRAM_BOT_TOKEN = os.getenv("telegram_bot_token")
@@ -132,6 +129,9 @@ async def check_new_listings(context: ContextTypes.DEFAULT_TYPE):
     offers = fetch_offers()
     new_offers = []
 
+    print(f"Total listings in response: {len(offers)}")
+    print(f"New listings: {len(new_offers)}")
+
     for offer in offers:
         offer_id = offer.get("objektID")
         if offer_id and offer_id not in seen_ids:
@@ -169,11 +169,29 @@ async def start_command(update, context):
         print("👀 You're already subscribed.")
         await update.message.reply_text("👀 You're already subscribed.")
 
+
+async def stop_command(update, context):
+    chat_id = update.effective_chat.id
+    subscribers = load_subscribers()
+    if chat_id in subscribers:
+        subscribers.remove(chat_id)
+        save_subscribers(subscribers)
+        print(f"❌ User {chat_id} unsubscribed.")
+        await update.message.reply_text("❌ You have unsubscribed from apartment alerts.")
+    else:
+        print(f"👀 User {chat_id} tried to unsubscribe but was not subscribed.")
+        await update.message.reply_text("👀 You were not subscribed.")
+
+
 def main():
-    # your existing async main code here
     application = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
-    # add your handlers
+
     application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("stop", stop_command))
+
+    # Schedule the check_new_listings job
+    job_queue = application.job_queue
+    job_queue.run_repeating(check_new_listings, interval=6, first=10)  # every 10 min
 
     application.run_polling()
 
