@@ -1,18 +1,21 @@
-import time
-import requests
-import telegram
-import re
-import os
-import json
 import asyncio
-import threading
-from telegram.ext import ApplicationBuilder, CommandHandler
+import json
+import os
+import re
+import telegram
+
+import requests
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
-load_dotenv()
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, JobQueue
+import nest_asyncio
 
+
+nest_asyncio.apply()
+load_dotenv()
 TELEGRAM_BOT_TOKEN = os.getenv("telegram_bot_token")
 SUBSCRIBERS_FILE = "subscribers.json"
+
 
 def fetch_offers():
     url = "https://inberlinwohnen.de/wp-content/themes/ibw/skript/wohnungsfinder.php"
@@ -37,7 +40,6 @@ def fetch_offers():
     soup = BeautifulSoup(html, "html.parser")
 
     print(f"HTML length: {len(html)}")
-    # print(html[:1000])  # first 1000 characters
 
     offers = []
     flats = soup.find_all("li", class_="tb-merkflat")
@@ -48,13 +50,11 @@ def fetch_offers():
         match = re.search(r"flat_(\d+)", div_id)
         objekt_id = match.group(1) if match else ""
 
-        # основной текст с данными
         span = flat.find("span", class_="_tb_left")
         if not span:
             continue
 
         text = span.get_text(separator=" ", strip=True)
-        # Пример: "1 Zimmer, 40,06 ma, 290,40 € | Riemannstr. 22, Kreuzberg"
 
         zimmer_match = re.search(r"(\d+[\.,]?\d*)\s*Zimmer", text)
         qm_match = re.search(r"(\d+[\.,]?\d*)\s*m²", text, re.IGNORECASE)
@@ -66,11 +66,10 @@ def fetch_offers():
 
         adresse = text.split("|")[-1].strip() if "|" in text else ""
 
-        # Filter: Only listings with rent <= 1000 and in selected districts
         try:
             rent = float(kaltmiete.replace(",", "."))
         except ValueError:
-            continue  # Skip if price is invalid
+            continue
 
         allowed_districts = [
             "Kreuzberg", "Friedrichshain", "Pankow", "Neukölln", "Mitte", "Tempelhof", "Schöneberg"
@@ -80,7 +79,7 @@ def fetch_offers():
             continue
 
         if not any(district.lower() in adresse.lower() for district in allowed_districts):
-           continue
+            continue
 
         offers.append({
             "objektID": objekt_id,
@@ -92,17 +91,6 @@ def fetch_offers():
 
     return offers
 
-def find_kaltmiete(trs, start_index):
-    for j in range(start_index, min(start_index + 10, len(trs))):
-        th = trs[j].find("th")
-        if th:
-            header_text = th.text.strip()
-            print(f"Checking row {j} with header: '{header_text}'")
-            if "kaltmiete" in header_text.lower():
-                td = trs[j].find("td")
-                if td:
-                    return td.text.strip()
-    return ""
 
 def load_seen_ids():
     if os.path.exists("seen.json"):
@@ -110,17 +98,11 @@ def load_seen_ids():
             return set(json.load(f))
     return set()
 
+
 def save_seen_ids(ids):
     with open("seen.json", "w") as f:
         json.dump(list(ids), f)
 
-async def send_telegram_message(text, chat_id):
-    try:
-        bot = telegram.Bot(token=TELEGRAM_BOT_TOKEN)
-        print(f"Sending message to chat_id={chat_id}: {text}")
-        await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
-    except Exception as e:
-        print(f"Failed to send message to {chat_id}: {e}")
 
 def load_subscribers():
     try:
@@ -131,43 +113,26 @@ def load_subscribers():
         print(f"Error loading subscribers: {e}")
     return set()
 
+
 def save_subscribers(subscribers):
     with open(SUBSCRIBERS_FILE, "w") as f:
         json.dump(list(subscribers), f)
 
-async def start_command(update, context):
-    chat_id = update.effective_chat.id
-    subscribers = load_subscribers()
-    if chat_id not in subscribers:
-        subscribers.add(chat_id)
-        save_subscribers(subscribers)
-        await update.message.reply_text("✅ You are now subscribed to apartment alerts!")
-    else:
-        await update.message.reply_text("👀 You're already subscribed.")
 
-def run_bot_listener():
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-
-    app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start_command))
-    loop.run_until_complete(app.initialize())
-    loop.run_until_complete(app.start())
-    loop.run_until_complete(app.updater.start_polling())
-    loop.run_forever()
+async def send_telegram_message(text, chat_id, context):
+    try:
+        await context.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
+        print(f"Sent message to chat_id={chat_id}")
+    except Exception as e:
+        print(f"Failed to send message to {chat_id}: {e}")
 
 
-def main():
-    # запустить слушателя в фоне
-    threading.Thread(target=run_bot_listener, daemon=True).start()
+async def check_new_listings(context: ContextTypes.DEFAULT_TYPE):
+    print("Checking new listings...")
 
     seen_ids = load_seen_ids()
     offers = fetch_offers()
     new_offers = []
-
-    print(f"Total listings in response: {len(offers)}")
-    print(f"New listings: {len(new_offers)}")
-    print("Example listing:", offers[0] if offers else "empty list")
 
     for offer in offers:
         offer_id = offer.get("objektID")
@@ -177,26 +142,42 @@ def main():
 
     save_seen_ids(seen_ids)
 
+    subscribers = load_subscribers()
+    if not subscribers:
+        print("No subscribers to send messages to.")
+        return
+
     for offer in new_offers:
         message = (
             f"🏠 <b>{offer.get('adresse')}</b>\n"
             f"{offer.get('zimmer')} Zimmer | {offer.get('qm')} m² | {offer.get('kaltmiete')} €\n"
             f"<a href='https://inberlinwohnen.de/wohnungsfinder/?oID={offer.get('objektID')}'>🔗 Zum Angebot</a>"
         )
+        print(f"New offer:\n{message}")
 
-        print(message)
-        subscribers = load_subscribers()
         for chat_id in subscribers:
-            asyncio.run(send_telegram_message(message, chat_id))
+            await send_telegram_message(message, chat_id, context)
 
-def run_bot():
-    while True:
-        try:
-            main()
-        except Exception as e:
-            print(f"Error in main loop: {e}")
-        print("Sleeping for 10 minutes...")
-        time.sleep(600)
+
+async def start_command(update, context):
+    chat_id = update.effective_chat.id
+    subscribers = load_subscribers()
+    if chat_id not in subscribers:
+        subscribers.add(chat_id)
+        save_subscribers(subscribers)
+        print("✅ You are now subscribed to apartment alerts!")
+        await update.message.reply_text("✅ You are now subscribed to apartment alerts!")
+    else:
+        print("👀 You're already subscribed.")
+        await update.message.reply_text("👀 You're already subscribed.")
+
+async def main():
+    # your existing async main code here
+    application = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
+    # add your handlers
+    application.add_handler(CommandHandler("start", start_command))
+
+    await application.run_polling()
 
 if __name__ == "__main__":
-    run_bot()
+    asyncio.run(main())
