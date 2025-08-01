@@ -10,6 +10,14 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 load_dotenv()
 TELEGRAM_BOT_TOKEN = os.getenv("telegram_bot_token")
 SUBSCRIBERS_FILE = "subscribers.json"
+LISTINGS_UPDATE_INTERVAL = 1200 # 20 mins
+REQUEST_HEADERS = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",
+        "Accept": "*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://inberlinwohnen.de/wohnungsfinder/",
+        "Origin": "https://inberlinwohnen.de",
+    }
 
 
 def fetch_offers():
@@ -19,15 +27,7 @@ def fetch_offers():
         "save": "false"
     }
 
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",
-        "Accept": "*/*",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Referer": "https://inberlinwohnen.de/wohnungsfinder/",
-        "Origin": "https://inberlinwohnen.de",
-    }
-
-    resp = requests.post(url, data=payload, headers=headers, timeout=10)
+    resp = requests.post(url, data=payload, headers=REQUEST_HEADERS, timeout=10)
     resp.raise_for_status()
 
     data = resp.json()
@@ -191,7 +191,7 @@ def main():
 
     # Schedule the check_new_listings job
     job_queue = application.job_queue
-    job_queue.run_repeating(check_new_listings, interval=6, first=10)  # every 10 min
+    job_queue.run_repeating(check_new_listings, interval=LISTINGS_UPDATE_INTERVAL, first=10)
 
     application.run_polling()
 
