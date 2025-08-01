@@ -8,10 +8,8 @@ import requests
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, JobQueue
-import nest_asyncio
 
 
-nest_asyncio.apply()
 load_dotenv()
 TELEGRAM_BOT_TOKEN = os.getenv("telegram_bot_token")
 SUBSCRIBERS_FILE = "subscribers.json"
@@ -171,13 +169,13 @@ async def start_command(update, context):
         print("👀 You're already subscribed.")
         await update.message.reply_text("👀 You're already subscribed.")
 
-async def main():
+def main():
     # your existing async main code here
     application = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     # add your handlers
     application.add_handler(CommandHandler("start", start_command))
 
-    await application.run_polling()
+    application.run_polling()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
