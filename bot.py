@@ -1,11 +1,12 @@
 import json
 import os
 import re
-
 import requests
+
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from datetime import datetime
 
 load_dotenv()
 TELEGRAM_BOT_TOKEN = os.getenv("telegram_bot_token")
@@ -18,6 +19,9 @@ REQUEST_HEADERS = {
         "Referer": "https://inberlinwohnen.de/wohnungsfinder/",
         "Origin": "https://inberlinwohnen.de",
     }
+ALLOWED_DISTRICTS = [
+            "Kreuzberg", "Friedrichshain", "Pankow", "Neukölln", "Mitte", "Tempelhof", "Schöneberg"
+        ]
 
 
 def fetch_offers():
@@ -27,8 +31,15 @@ def fetch_offers():
         "save": "false"
     }
 
-    resp = requests.post(url, data=payload, headers=REQUEST_HEADERS, timeout=10)
-    resp.raise_for_status()
+    try:
+        resp = requests.post(url, data=payload, headers=REQUEST_HEADERS, timeout=10)
+        resp.raise_for_status()
+    except requests.exceptions.HTTPError as e:
+        print(f"[{datetime.now()}] HTTP error: {e}")
+        return []
+    except requests.exceptions.RequestException as e:
+        print(f"[{datetime.now()}] Request failed: {e}")
+        return []
 
     data = resp.json()
     html = data.get("searchresults", "")
@@ -123,7 +134,7 @@ async def send_telegram_message(text, chat_id, context):
 
 
 async def check_new_listings(context: ContextTypes.DEFAULT_TYPE):
-    print("Checking new listings...")
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Checking new listings...")
 
     seen_ids = load_seen_ids()
     offers = fetch_offers()
