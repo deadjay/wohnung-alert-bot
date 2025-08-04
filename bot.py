@@ -11,7 +11,7 @@ from datetime import datetime
 load_dotenv()
 TELEGRAM_BOT_TOKEN = os.getenv("telegram_bot_token")
 SUBSCRIBERS_FILE = "subscribers.json"
-LISTINGS_UPDATE_INTERVAL = 1200 # 20 mins
+LISTINGS_UPDATE_INTERVAL = 600 # 10 mins
 REQUEST_HEADERS = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",
         "Accept": "*/*",
@@ -69,22 +69,18 @@ def fetch_offers():
         zimmer = zimmer_match.group(1) if zimmer_match else ""
         qm = qm_match.group(1) if qm_match else ""
         kaltmiete = price_match.group(1) if price_match else ""
-
+        normalized_price = kaltmiete.replace(".", "").replace(",", ".")
         adresse = text.split("|")[-1].strip() if "|" in text else ""
 
         try:
-            rent = float(kaltmiete.replace(",", "."))
+            rent = float(normalized_price)
         except ValueError:
             continue
-
-        allowed_districts = [
-            "Kreuzberg", "Friedrichshain", "Pankow", "Neukölln", "Mitte", "Tempelhof", "Schöneberg"
-        ]
 
         if rent > 1000:
             continue
 
-        if not any(district.lower() in adresse.lower() for district in allowed_districts):
+        if not any(district.lower() in adresse.lower() for district in ALLOWED_DISTRICTS):
             continue
 
         offers.append({
