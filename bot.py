@@ -84,18 +84,27 @@ def fetch_offers():
                     adresse = addr_elem.split(":")[-1].strip()
                 else:
                     adresse = addr_elem.get_text(strip=True)
+                    # Clean up "Adresse:" prefix if present
+                    if adresse.startswith("Adresse:"):
+                        adresse = adresse.replace("Adresse:", "").strip()
 
             # If no address element found, try to extract from full text
             if not adresse:
-                # Look for pattern like "Straße Hausnummer, PLZ Bezirk"
-                addr_match = re.search(r'([A-ZÄÖÜ][a-zäöüß]+(?:straße|str\.|weg|platz|allee)[^\d]*\d+[a-z]?)', text,
-                                       re.I)
+                # Look for "Adresse: XXX" pattern first - capture everything until we hit "Zimmer" or line break
+                addr_match = re.search(r'Adresse:\s*(.+?)(?=\s+Zimmer|\s+Wohnfläche|\n|$)', text, re.I)
                 if addr_match:
                     adresse = addr_match.group(1).strip()
+                else:
+                    # Look for pattern after pipe: "Address, PLZ District"
+                    addr_match = re.search(r'\|\s*(.+?)\s+(\d{5})\s*,?\s*([^\n]+?)(?=\s+Wohnung|\s+Alle Details|$)',
+                                           text)
+                    if addr_match:
+                        # Combine all parts: street, postal code, district
+                        adresse = f"{addr_match.group(1).strip()}, {addr_match.group(2)}, {addr_match.group(3).strip()}"
 
             # Extract number of rooms
-            zimmer_match = re.search(r"(\d+[\.,]?\d*)\s*(?:Zimmer|Zi\.)", text, re.I)
-            zimmer = zimmer_match.group(1).replace(",", ".") if zimmer_match else ""
+            zimmer_match = re.search(r'(\d+[,.]?\d*)\s*(?:Zimmer|Zi\.)', text, re.I)
+            zimmer = zimmer_match.group(1).replace(",", ".") if zimmer_match else "?"
 
             # Extract square meters
             qm_match = re.search(r"(\d+[\.,]?\d*)\s*m²", text, re.I)
