@@ -13,26 +13,28 @@ TELEGRAM_BOT_TOKEN = os.getenv("telegram_bot_token")
 SUBSCRIBERS_FILE = "subscribers.json"
 LISTINGS_UPDATE_INTERVAL = 600 # 10 mins
 REQUEST_HEADERS = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",
-        "Accept": "*/*",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Referer": "https://inberlinwohnen.de/wohnungsfinder/",
-        "Origin": "https://inberlinwohnen.de",
-    }
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9,de;q=0.8",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Connection": "keep-alive",
+    "Upgrade-Insecure-Requests": "1",
+    "Cache-Control": "max-age=0"
+}
 ALLOWED_DISTRICTS = [
             "Kreuzberg", "Friedrichshain", "Pankow", "Neukölln", "Mitte", "Tempelhof", "Schöneberg"
         ]
 
 
 def fetch_offers():
-    url = "https://inberlinwohnen.de/wp-content/themes/ibw/skript/wohnungsfinder.php"
-    payload = {
-        "q": "wf-save-srch",
-        "save": "false"
-    }
+    """
+    Fetch apartment listings by scraping the HTML page directly.
+    The old API endpoint no longer exists after website redesign in 2024.
+    """
+    url = "https://www.inberlinwohnen.de/wohnungsfinder/"
 
     try:
-        resp = requests.post(url, data=payload, headers=REQUEST_HEADERS, timeout=10)
+        resp = requests.get(url, headers=REQUEST_HEADERS, timeout=15)
         resp.raise_for_status()
     except requests.exceptions.HTTPError as e:
         print(f"[{datetime.now()}] HTTP error: {e}")
@@ -41,57 +43,140 @@ def fetch_offers():
         print(f"[{datetime.now()}] Request failed: {e}")
         return []
 
-    data = resp.json()
-    html = data.get("searchresults", "")
-    soup = BeautifulSoup(html, "html.parser")
-
-    print(f"HTML length: {len(html)}")
+    soup = BeautifulSoup(resp.text, "html.parser")
 
     offers = []
-    flats = soup.find_all("li", class_="tb-merkflat")
-    print(f"Found listing blocks: {len(flats)}")
 
-    for flat in flats:
-        div_id = flat.get("id", "")
-        match = re.search(r"flat_(\d+)", div_id)
-        objekt_id = match.group(1) if match else ""
+    # Find all listing containers - they appear to be in article tags or similar containers
+    # We need to find the pattern in the HTML
+    listing_containers = soup.find_all("article") or soup.find_all("div",
+                                                                   class_=re.compile(r"wohnung|offer|listing|apartment",
+                                                                                     re.I))
 
-        span = flat.find("span", class_="_tb_left")
-        if not span:
-            continue
+    # If we can't find article tags, try to find divs with listing information
+    if not listing_containers:
+        # Look for elements that contain typical listing info patterns
+        all_divs = soup.find_all("div")
+        listing_containers = [div for div in all_divs if
+                              div.find(string=re.compile(r"Zimmer|m²|€", re.I))]
 
-        text = span.get_text(separator=" ", strip=True)
+    print(f"[{datetime.now()}] Found {len(listing_containers)} potential listing containers")
 
-        zimmer_match = re.search(r"(\d+[\.,]?\d*)\s*Zimmer", text)
-        qm_match = re.search(r"(\d+[\.,]?\d*)\s*m²", text, re.IGNORECASE)
-        price_match = re.search(r"(\d+[\.,]?\d*)\s*€", text)
-
-        zimmer = zimmer_match.group(1) if zimmer_match else ""
-        qm = qm_match.group(1) if qm_match else ""
-        kaltmiete = price_match.group(1) if price_match else ""
-        normalized_price = kaltmiete.replace(".", "").replace(",", ".")
-        adresse = text.split("|")[-1].strip() if "|" in text else ""
-
+    for container in listing_containers:
         try:
-            rent = float(normalized_price)
-        except ValueError:
+            # Extract text content
+            text = container.get_text(separator=" ", strip=True)
+
+            # Skip if doesn't look like a listing
+            if "Zimmer" not in text or "€" not in text:
+                continue
+
+            # Extract address - look for common patterns
+            adresse = ""
+
+            # Try to find address in various common HTML structures
+            addr_elem = (container.find("div", class_=re.compile(r"address|adresse", re.I)) or
+                         container.find("span", class_=re.compile(r"address|adresse", re.I)) or
+                         container.find(string=re.compile(r"Adresse:", re.I)))
+
+            if addr_elem:
+                if isinstance(addr_elem, str):
+                    adresse = addr_elem.split(":")[-1].strip()
+                else:
+                    adresse = addr_elem.get_text(strip=True)
+
+            # If no address element found, try to extract from full text
+            if not adresse:
+                # Look for pattern like "Straße Hausnummer, PLZ Bezirk"
+                addr_match = re.search(r'([A-ZÄÖÜ][a-zäöüß]+(?:straße|str\.|weg|platz|allee)[^\d]*\d+[a-z]?)', text,
+                                       re.I)
+                if addr_match:
+                    adresse = addr_match.group(1).strip()
+
+            # Extract number of rooms
+            zimmer_match = re.search(r"(\d+[\.,]?\d*)\s*(?:Zimmer|Zi\.)", text, re.I)
+            zimmer = zimmer_match.group(1).replace(",", ".") if zimmer_match else ""
+
+            # Extract square meters
+            qm_match = re.search(r"(\d+[\.,]?\d*)\s*m²", text, re.I)
+            qm = qm_match.group(1).replace(",", ".") if qm_match else ""
+
+            # Extract rent - look for "Kaltmiete" specifically
+            kaltmiete = ""
+            kalt_match = re.search(r"Kaltmiete[:\s]*(\d+[\.,]?\d*)\s*€", text, re.I)
+            if kalt_match:
+                kaltmiete = kalt_match.group(1)
+            else:
+                # Fallback to any price if Kaltmiete not found
+                price_match = re.search(r"(\d+[\.,]?\d*)\s*€", text)
+                if price_match:
+                    kaltmiete = price_match.group(1)
+
+            if not kaltmiete:
+                continue
+
+            # Normalize price (remove thousand separators, convert comma to dot)
+            normalized_price = kaltmiete.replace(".", "").replace(",", ".")
+
+            try:
+                rent = float(normalized_price)
+            except ValueError:
+                continue
+
+            # Filter: max rent 1000€
+            if rent > 1000:
+                print(f"  X Filtered (rent>1000): {adresse}, {rent}€")
+                continue
+
+            # Filter by district
+            if not any(district.lower() in text.lower() for district in ALLOWED_DISTRICTS):
+                # If no address or not in allowed districts, skip
+                if not adresse or not any(district.lower() in text.lower() for district in ALLOWED_DISTRICTS):
+                    continue
+
+            # Try to extract object ID from links
+            objekt_id = ""
+            links = container.find_all("a", href=True)
+            for link in links:
+                href = link.get("href", "")
+                # Look for ID patterns like oID=12345 or /wohnung/12345
+                id_match = re.search(r"(?:oID=|/wohnung/)(\d+)", href)
+                if id_match:
+                    objekt_id = id_match.group(1)
+                    break
+
+            # If no ID found, create one from the listing content hash
+            if not objekt_id:
+                # Use a hash of the key details as ID
+                objekt_id = str(hash(f"{adresse}_{zimmer}_{qm}_{kaltmiete}"))[-8:]
+
+            offers.append({
+                "objektID": objekt_id,
+                "adresse": adresse or "Adresse nicht verfügbar",
+                "zimmer": zimmer,
+                "qm": qm,
+                "kaltmiete": kaltmiete
+            })
+
+            print(
+                f"  -> Parsed: ID={objekt_id}, Addr={adresse[:30] if adresse else 'None'}, Rooms={zimmer}, SqM={qm}, Rent={kaltmiete}")
+
+        except Exception as e:
+            print(f"[{datetime.now()}] Error parsing listing: {e}")
             continue
 
-        if rent > 1000:
-            continue
+    print(f"[{datetime.now()}] Parsed {len(offers)} valid offers")
 
-        if not any(district.lower() in adresse.lower() for district in ALLOWED_DISTRICTS):
-            continue
+    # Deduplicate offers by objektID
+    seen_ids_in_batch = set()
+    unique_offers = []
+    for offer in offers:
+        if offer['objektID'] not in seen_ids_in_batch:
+            seen_ids_in_batch.add(offer['objektID'])
+            unique_offers.append(offer)
 
-        offers.append({
-            "objektID": objekt_id,
-            "adresse": adresse,
-            "zimmer": zimmer,
-            "qm": qm,
-            "kaltmiete": kaltmiete
-        })
-
-    return offers
+    print(f"[{datetime.now()}] After deduplication: {len(unique_offers)} unique offers")
+    return unique_offers  # Change this from 'return offers'
 
 
 def load_seen_ids():
@@ -137,7 +222,6 @@ async def check_new_listings(context: ContextTypes.DEFAULT_TYPE):
     new_offers = []
 
     print(f"Total listings in response: {len(offers)}")
-    print(f"New listings: {len(new_offers)}")
 
     for offer in offers:
         offer_id = offer.get("objektID")
@@ -145,6 +229,7 @@ async def check_new_listings(context: ContextTypes.DEFAULT_TYPE):
             new_offers.append(offer)
             seen_ids.add(offer_id)
 
+    print(f"New listings: {len(new_offers)}")
     save_seen_ids(seen_ids)
 
     subscribers = load_subscribers()
@@ -170,10 +255,10 @@ async def start_command(update, context):
     if chat_id not in subscribers:
         subscribers.add(chat_id)
         save_subscribers(subscribers)
-        print("✅ You are now subscribed to apartment alerts!")
+        print(f"✅ User {chat_id} subscribed")
         await update.message.reply_text("✅ You are now subscribed to apartment alerts!")
     else:
-        print("👀 You're already subscribed.")
+        print(f"👀 User {chat_id} already subscribed")
         await update.message.reply_text("👀 You're already subscribed.")
 
 
@@ -200,6 +285,7 @@ def main():
     job_queue = application.job_queue
     job_queue.run_repeating(check_new_listings, interval=LISTINGS_UPDATE_INTERVAL, first=10)
 
+    print(f"[{datetime.now()}] Bot started successfully!")
     application.run_polling()
 
 if __name__ == "__main__":
