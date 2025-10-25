@@ -47,84 +47,63 @@ def fetch_offers():
 
     offers = []
 
-    # Find all listing containers - they appear to be in article tags or similar containers
-    # We need to find the pattern in the HTML
-    listing_containers = soup.find_all("article") or soup.find_all("div",
-                                                                   class_=re.compile(r"wohnung|offer|listing|apartment",
-                                                                                     re.I))
+    # Find all listing containers with wire:id attribute (each represents one listing)
+    listing_containers = soup.find_all("div", attrs={"wire:id": True, "id": re.compile(r"apartment-\d+")})
 
-    # If we can't find article tags, try to find divs with listing information
-    if not listing_containers:
-        # Look for elements that contain typical listing info patterns
-        all_divs = soup.find_all("div")
-        listing_containers = [div for div in all_divs if
-                              div.find(string=re.compile(r"Zimmer|m²|€", re.I))]
-
-    print(f"[{datetime.now()}] Found {len(listing_containers)} potential listing containers")
+    print(f"[{datetime.now()}] Found {len(listing_containers)} listing containers")
 
     for container in listing_containers:
         try:
-            # Extract text content
-            text = container.get_text(separator=" ", strip=True)
+            # Extract the wire:snapshot JSON data which contains objectId and deeplink
+            snapshot_attr = container.get("wire:snapshot", "")
+            objekt_id = ""
+            deeplink = ""
 
-            # Skip if doesn't look like a listing
-            if "Zimmer" not in text or "€" not in text:
+            if snapshot_attr:
+                try:
+                    import json
+                    # The snapshot is HTML-escaped, so we need to unescape it first
+                    import html
+                    snapshot_json = html.unescape(snapshot_attr)
+                    snapshot_data = json.loads(snapshot_json)
+
+                    # Navigate through the nested structure
+                    item_data = snapshot_data.get("data", {}).get("item", [])
+                    if item_data and len(item_data) > 0:
+                        objekt_id = item_data[0].get("objectId", "")
+                        deeplink = item_data[0].get("deeplink", "")
+                        print(f"  -> Extracted: ID={objekt_id}, Link={deeplink[:50] if deeplink else 'None'}...")
+                except (json.JSONDecodeError, KeyError, IndexError) as e:
+                    print(f"  ! Could not parse snapshot data: {e}")
+
+            # Find the span with listing details
+            detail_span = container.find("span", class_="block")
+            if not detail_span:
                 continue
 
-            # Extract address - look for common patterns
-            adresse = ""
+            text = detail_span.get_text(separator=" ", strip=True)
 
-            # Try to find address in various common HTML structures
-            addr_elem = (container.find("div", class_=re.compile(r"address|adresse", re.I)) or
-                         container.find("span", class_=re.compile(r"address|adresse", re.I)) or
-                         container.find(string=re.compile(r"Adresse:", re.I)))
-
-            if addr_elem:
-                if isinstance(addr_elem, str):
-                    adresse = addr_elem.split(":")[-1].strip()
-                else:
-                    adresse = addr_elem.get_text(strip=True)
-                    # Clean up "Adresse:" prefix if present
-                    if adresse.startswith("Adresse:"):
-                        adresse = adresse.replace("Adresse:", "").strip()
-
-            # If no address element found, try to extract from full text
-            if not adresse:
-                # Look for "Adresse: XXX" pattern first - capture everything until we hit "Zimmer" or line break
-                addr_match = re.search(r'Adresse:\s*(.+?)(?=\s+Zimmer|\s+Wohnfläche|\n|$)', text, re.I)
-                if addr_match:
-                    adresse = addr_match.group(1).strip()
-                else:
-                    # Look for pattern after pipe: "Address, PLZ District"
-                    addr_match = re.search(r'\|\s*(.+?)\s+(\d{5})\s*,?\s*([^\n]+?)(?=\s+Wohnung|\s+Alle Details|$)',
-                                           text)
-                    if addr_match:
-                        # Combine all parts: street, postal code, district
-                        adresse = f"{addr_match.group(1).strip()}, {addr_match.group(2)}, {addr_match.group(3).strip()}"
-
-            # Extract number of rooms
-            zimmer_match = re.search(r'(\d+[,.]?\d*)\s*(?:Zimmer|Zi\.)', text, re.I)
+            # Parse the format: "X,X Zimmer, X,XX m², X,XX € | Address"
+            # Extract rooms
+            zimmer_match = re.search(r'(\d+[,.]?\d*)\s*Zimmer', text)
             zimmer = zimmer_match.group(1).replace(",", ".") if zimmer_match else "?"
 
             # Extract square meters
-            qm_match = re.search(r"(\d+[\.,]?\d*)\s*m²", text, re.I)
+            qm_match = re.search(r'(\d+[,.]?\d*)\s*m²', text)
             qm = qm_match.group(1).replace(",", ".") if qm_match else ""
 
-            # Extract rent - look for "Kaltmiete" specifically
-            kaltmiete = ""
-            kalt_match = re.search(r"Kaltmiete[:\s]*(\d+[\.,]?\d*)\s*€", text, re.I)
-            if kalt_match:
-                kaltmiete = kalt_match.group(1)
-            else:
-                # Fallback to any price if Kaltmiete not found
-                price_match = re.search(r"(\d+[\.,]?\d*)\s*€", text)
-                if price_match:
-                    kaltmiete = price_match.group(1)
+            # Extract rent (Kaltmiete)
+            price_match = re.search(r'(\d+[,.]?\d*)\s*€', text)
+            kaltmiete = price_match.group(1) if price_match else ""
 
             if not kaltmiete:
                 continue
 
-            # Normalize price (remove thousand separators, convert comma to dot)
+            # Extract address (everything after the pipe |)
+            addr_match = re.search(r'\|\s*(.+)$', text)
+            adresse = addr_match.group(1).strip() if addr_match else ""
+
+            # Normalize price for filtering
             normalized_price = kaltmiete.replace(".", "").replace(",", ".")
 
             try:
@@ -134,58 +113,35 @@ def fetch_offers():
 
             # Filter: max rent 1000€
             if rent > 1000:
-                print(f"  X Filtered (rent>1000): {adresse}, {rent}€")
                 continue
 
-            # Filter by district
+            # Filter by district - check in full text
             if not any(district.lower() in text.lower() for district in ALLOWED_DISTRICTS):
-                # If no address or not in allowed districts, skip
-                if not adresse or not any(district.lower() in text.lower() for district in ALLOWED_DISTRICTS):
-                    continue
+                continue
 
-            # Try to extract object ID from links
-            objekt_id = ""
-            links = container.find_all("a", href=True)
-            for link in links:
-                href = link.get("href", "")
-                # Look for ID patterns like oID=12345 or /wohnung/12345
-                id_match = re.search(r"(?:oID=|/wohnung/)(\d+)", href)
-                if id_match:
-                    objekt_id = id_match.group(1)
-                    break
-
-            # If no ID found, create one from the listing content hash
+            # If no objectId found, create one from hash
             if not objekt_id:
-                # Use a hash of the key details as ID
-                objekt_id = str(hash(f"{adresse}_{zimmer}_{qm}_{kaltmiete}"))[-8:]
+                # Normalize data for consistent hashing
+                normalized_addr = adresse.replace(" ", "").lower()
+                normalized_qm = qm.replace(",", ".")
+                normalized_price_clean = normalized_price
+                objekt_id = str(hash(f"{normalized_addr}_{normalized_qm}_{normalized_price_clean}"))[-8:]
 
             offers.append({
                 "objektID": objekt_id,
                 "adresse": adresse or "Adresse nicht verfügbar",
                 "zimmer": zimmer,
                 "qm": qm,
-                "kaltmiete": kaltmiete
+                "kaltmiete": kaltmiete,
+                "deeplink": deeplink  # Add the actual deeplink
             })
-
-            print(
-                f"  -> Parsed: ID={objekt_id}, Addr={adresse[:30] if adresse else 'None'}, Rooms={zimmer}, SqM={qm}, Rent={kaltmiete}")
 
         except Exception as e:
             print(f"[{datetime.now()}] Error parsing listing: {e}")
             continue
 
     print(f"[{datetime.now()}] Parsed {len(offers)} valid offers")
-
-    # Deduplicate offers by objektID
-    seen_ids_in_batch = set()
-    unique_offers = []
-    for offer in offers:
-        if offer['objektID'] not in seen_ids_in_batch:
-            seen_ids_in_batch.add(offer['objektID'])
-            unique_offers.append(offer)
-
-    print(f"[{datetime.now()}] After deduplication: {len(unique_offers)} unique offers")
-    return unique_offers  # Change this from 'return offers'
+    return offers
 
 
 def load_seen_ids():
