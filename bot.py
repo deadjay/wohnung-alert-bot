@@ -203,10 +203,13 @@ async def check_new_listings(context: ContextTypes.DEFAULT_TYPE):
         return
 
     for offer in new_offers:
+        # Use deeplink if available, otherwise fall back to wohnungsfinder
+        link = offer.get('deeplink') or f"https://www.inberlinwohnen.de/wohnungsfinder/?oID={offer.get('objektID')}"
+
         message = (
             f"🏠 <b>{offer.get('adresse')}</b>\n"
             f"{offer.get('zimmer')} Zimmer | {offer.get('qm')} m² | {offer.get('kaltmiete')} €\n"
-            f"<a href='https://inberlinwohnen.de/wohnungsfinder/?oID={offer.get('objektID')}'>🔗 Zum Angebot</a>"
+            f"<a href='{link}'>🔗 Zum Angebot</a>"
         )
         print(f"New offer:\n{message}")
 
