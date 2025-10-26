@@ -7,6 +7,7 @@ from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from datetime import datetime
+import html as html_lib
 
 load_dotenv()
 TELEGRAM_BOT_TOKEN = os.getenv("telegram_bot_token")
@@ -24,6 +25,93 @@ REQUEST_HEADERS = {
 ALLOWED_DISTRICTS = [
             "Kreuzberg", "Friedrichshain", "Pankow", "Neukölln", "Mitte", "Tempelhof", "Schöneberg"
         ]
+
+
+def extract_listing_metadata(container):
+    """Extract objectId and deeplink from wire:snapshot JSON data."""
+    snapshot_attr = container.get("wire:snapshot", "")
+
+    if not snapshot_attr:
+        return None, None
+
+    try:
+        snapshot_json = html_lib.unescape(snapshot_attr)
+        snapshot_data = json.loads(snapshot_json)
+
+        item_data = snapshot_data.get("data", {}).get("item", [])
+        if item_data and len(item_data) > 0:
+            objekt_id = item_data[0].get("objectId", "")
+            deeplink = item_data[0].get("deeplink", "")
+            return objekt_id, deeplink
+    except (json.JSONDecodeError, KeyError, IndexError) as e:
+        print(f"  ! Could not parse snapshot data: {e}")
+
+    return None, None
+
+
+def parse_listing_details(detail_span):
+    """Parse room count, size, price, and address from listing span."""
+    if not detail_span:
+        return None
+
+    text = detail_span.get_text(separator=" ", strip=True)
+
+    # Extract rooms
+    zimmer_match = re.search(r'(\d+[,.]?\d*)\s*Zimmer', text)
+    zimmer = zimmer_match.group(1).replace(",", ".") if zimmer_match else "?"
+
+    # Extract square meters
+    qm_match = re.search(r'(\d+[,.]?\d*)\s*m²', text)
+    qm = qm_match.group(1).replace(",", ".") if qm_match else ""
+
+    # Extract rent
+    price_match = re.search(r'(\d+[,.]?\d*)\s*€', text)
+    kaltmiete = price_match.group(1) if price_match else ""
+
+    # Extract address (after the pipe |)
+    addr_match = re.search(r'\|\s*(.+)$', text)
+    adresse = addr_match.group(1).strip() if addr_match else ""
+
+    return {
+        "zimmer": zimmer,
+        "qm": qm,
+        "kaltmiete": kaltmiete,
+        "adresse": adresse,
+        "text": text
+    }
+
+
+def normalize_price(kaltmiete):
+    """Convert price string to float, handling German number format."""
+    try:
+        normalized = kaltmiete.replace(".", "").replace(",", ".")
+        return float(normalized)
+    except ValueError:
+        return None
+
+
+def generate_fallback_id(adresse, qm, kaltmiete):
+    """Generate a hash-based ID when objectId is not available."""
+    normalized_addr = adresse.replace(" ", "").lower()
+    normalized_qm = qm.replace(",", ".")
+    normalized_price = kaltmiete.replace(".", "").replace(",", ".")
+    return str(hash(f"{normalized_addr}_{normalized_qm}_{normalized_price}"))[-8:]
+
+
+def should_include_listing(details, rent):
+    """Check if listing passes all filters."""
+    if not details or not details["kaltmiete"]:
+        return False
+
+    if rent is None or rent > 1000:
+        return False
+
+    # Check district filter
+    text = details["text"]
+    if not any(district.lower() in text.lower() for district in ALLOWED_DISTRICTS):
+        return False
+
+    return True
 
 
 def fetch_offers():
@@ -45,95 +133,46 @@ def fetch_offers():
 
     soup = BeautifulSoup(resp.text, "html.parser")
 
-    offers = []
-
-    # Find all listing containers with wire:id attribute (each represents one listing)
+    # Find all listing containers
     listing_containers = soup.find_all("div", attrs={"wire:id": True, "id": re.compile(r"apartment-\d+")})
-
     print(f"[{datetime.now()}] Found {len(listing_containers)} listing containers")
+
+    offers = []
 
     for container in listing_containers:
         try:
-            # Extract the wire:snapshot JSON data which contains objectId and deeplink
-            snapshot_attr = container.get("wire:snapshot", "")
-            objekt_id = ""
-            deeplink = ""
+            # Extract metadata
+            objekt_id, deeplink = extract_listing_metadata(container)
 
-            if snapshot_attr:
-                try:
-                    import json
-                    # The snapshot is HTML-escaped, so we need to unescape it first
-                    import html
-                    snapshot_json = html.unescape(snapshot_attr)
-                    snapshot_data = json.loads(snapshot_json)
-
-                    # Navigate through the nested structure
-                    item_data = snapshot_data.get("data", {}).get("item", [])
-                    if item_data and len(item_data) > 0:
-                        objekt_id = item_data[0].get("objectId", "")
-                        deeplink = item_data[0].get("deeplink", "")
-                        print(f"  -> Extracted: ID={objekt_id}, Link={deeplink[:50] if deeplink else 'None'}...")
-                except (json.JSONDecodeError, KeyError, IndexError) as e:
-                    print(f"  ! Could not parse snapshot data: {e}")
-
-            # Find the span with listing details
+            # Parse listing details
             detail_span = container.find("span", class_="block")
-            if not detail_span:
+            details = parse_listing_details(detail_span)
+
+            if not details:
                 continue
 
-            text = detail_span.get_text(separator=" ", strip=True)
+            # Normalize and validate price
+            rent = normalize_price(details["kaltmiete"])
 
-            # Parse the format: "X,X Zimmer, X,XX m², X,XX € | Address"
-            # Extract rooms
-            zimmer_match = re.search(r'(\d+[,.]?\d*)\s*Zimmer', text)
-            zimmer = zimmer_match.group(1).replace(",", ".") if zimmer_match else "?"
-
-            # Extract square meters
-            qm_match = re.search(r'(\d+[,.]?\d*)\s*m²', text)
-            qm = qm_match.group(1).replace(",", ".") if qm_match else ""
-
-            # Extract rent (Kaltmiete)
-            price_match = re.search(r'(\d+[,.]?\d*)\s*€', text)
-            kaltmiete = price_match.group(1) if price_match else ""
-
-            if not kaltmiete:
+            # Apply filters
+            if not should_include_listing(details, rent):
                 continue
 
-            # Extract address (everything after the pipe |)
-            addr_match = re.search(r'\|\s*(.+)$', text)
-            adresse = addr_match.group(1).strip() if addr_match else ""
-
-            # Normalize price for filtering
-            normalized_price = kaltmiete.replace(".", "").replace(",", ".")
-
-            try:
-                rent = float(normalized_price)
-            except ValueError:
-                continue
-
-            # Filter: max rent 1000€
-            if rent > 1000:
-                continue
-
-            # Filter by district - check in full text
-            if not any(district.lower() in text.lower() for district in ALLOWED_DISTRICTS):
-                continue
-
-            # If no objectId found, create one from hash
+            # Generate fallback ID if needed
             if not objekt_id:
-                # Normalize data for consistent hashing
-                normalized_addr = adresse.replace(" ", "").lower()
-                normalized_qm = qm.replace(",", ".")
-                normalized_price_clean = normalized_price
-                objekt_id = str(hash(f"{normalized_addr}_{normalized_qm}_{normalized_price_clean}"))[-8:]
+                objekt_id = generate_fallback_id(
+                    details["adresse"],
+                    details["qm"],
+                    details["kaltmiete"]
+                )
 
             offers.append({
                 "objektID": objekt_id,
-                "adresse": adresse or "Adresse nicht verfügbar",
-                "zimmer": zimmer,
-                "qm": qm,
-                "kaltmiete": kaltmiete,
-                "deeplink": deeplink  # Add the actual deeplink
+                "adresse": details["adresse"] or "Adresse nicht verfügbar",
+                "zimmer": details["zimmer"],
+                "qm": details["qm"],
+                "kaltmiete": details["kaltmiete"],
+                "deeplink": deeplink
             })
 
         except Exception as e:
